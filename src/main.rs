@@ -8,13 +8,12 @@ use libc::{c_int, c_short, c_void, AF_PACKET};
 use libc::{socket, recv, close};
 use errno::errno;
 
+use std::thread;
+
 static SOCK_RAW: c_int = 3;
 static ETH_P_ARP: c_short = 0x0806;
 
-fn main() {
-    env_logger::init().unwrap();
-
-    info!("Launching garpd");
+fn listen_for_arps() {
     let sock = unsafe { socket(AF_PACKET, SOCK_RAW, ETH_P_ARP.to_be() as c_int) };
     if sock < 0 {
         error!("Failed to open socket: {}, {}", sock, errno());
@@ -57,6 +56,21 @@ fn main() {
     }
 
     unsafe { close(sock) };
+}
+
+fn socket_handler() {
+    loop {}
+}
+
+fn main() {
+    env_logger::init().unwrap();
+    info!("Launching garpd");
+
+    // Spawn work threads.
+    let x = thread::spawn(move || listen_for_arps());
+    let y = thread::spawn(move || socket_handler());
+    x.join().unwrap();
+    y.join().unwrap();
 }
 
 
