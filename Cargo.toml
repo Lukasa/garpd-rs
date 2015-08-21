@@ -1,0 +1,8 @@
+[package]
+name = "garpd"
+version = "0.1.0"
+authors = ["ubuntu"]
+
+[dependencies]
+libc = "0.1"
+errno = "0.1"
