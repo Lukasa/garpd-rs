@@ -3,11 +3,14 @@ extern crate libc;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate unix_socket;
 
 use libc::{c_int, c_short, c_void, AF_PACKET};
 use libc::{socket, recv, close};
 use errno::errno;
+use unix_socket::{UnixStream, UnixListener};
 
+use std::io::prelude::*;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 
@@ -70,11 +73,51 @@ fn listen_for_arps(arp_tx: Sender<GARP>) {
     unsafe { close(sock) };
 }
 
-fn socket_handler(arp_rx: Receiver<GARP>) {
-    loop {
-        let arp = arp_rx.recv().unwrap();  // Handle error.
+fn report_garp(arp: GARP, unices: &mut Vec<UnixStream>) {
+    let message = format!("{{\"ip\": \"{}.{}.{}.{}\", \"mac\": \"{:x}:{:x}:{:x}:{:x}:{:x}:{:x}\"}}\n", arp.ip[0], arp.ip[1], arp.ip[2], arp.ip[3], arp.mac[0], arp.mac[1], arp.mac[2], arp.mac[3], arp.mac[4], arp.mac[5]);
 
-        println!("Gratuitous ARP! IP: {}.{}.{}.{}, MAC: {:x}:{:x}:{:x}:{:x}:{:x}:{:x}", arp.ip[0], arp.ip[1], arp.ip[2], arp.ip[3], arp.mac[0], arp.mac[1], arp.mac[2], arp.mac[3], arp.mac[4], arp.mac[5]);
+    for mut stream in unices {
+        stream.write_all(message.as_bytes()).unwrap();
+    }
+
+    println!("Gratuitous ARP! IP: {}.{}.{}.{}, MAC: {:x}:{:x}:{:x}:{:x}:{:x}:{:x}", arp.ip[0], arp.ip[1], arp.ip[2], arp.ip[3], arp.mac[0], arp.mac[1], arp.mac[2], arp.mac[3], arp.mac[4], arp.mac[5]);
+}
+
+fn handle_new_connection(stream: UnixStream, unices: &mut Vec<UnixStream>) {
+    unices.push(stream);
+}
+
+fn messenger(arp_rx: Receiver<GARP>, conn_rx: Receiver<UnixStream>) {
+    let mut unices: Vec<UnixStream> = Vec::new();
+
+    loop {
+        select! {
+            arp = arp_rx.recv() => {
+                let arp = arp.unwrap();
+                report_garp(arp, &mut unices);
+            },
+            stream = conn_rx.recv() => {
+                let stream = stream.unwrap();
+                handle_new_connection(stream, &mut unices);
+            }
+        }
+    }
+}
+
+
+fn listen_for_connections(conn_tx: Sender<UnixStream>) {
+    let listen = UnixListener::bind("/var/garpd").unwrap();
+
+    for stream in listen.incoming() {
+        match stream {
+            Ok(stream) => {
+                conn_tx.send(stream).unwrap();
+            }
+            Err(err) => {
+                error!("Encounted error listening for Unix conns: {}", err);
+                break;
+            }
+        }
     }
 }
 
@@ -84,10 +127,13 @@ fn main() {
 
     // Spawn work threads.
     let (arp_tx, arp_rx) = channel();
+    let (conn_tx, conn_rx) = channel();
     let x = thread::spawn(move || listen_for_arps(arp_tx));
-    let y = thread::spawn(move || socket_handler(arp_rx));
+    let y = thread::spawn(move || listen_for_connections(conn_tx));
+    let z = thread::spawn(move || messenger(arp_rx, conn_rx));
     x.join().unwrap();
     y.join().unwrap();
+    z.join().unwrap();
 }
 
 
